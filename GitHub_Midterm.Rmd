@@ -1,0 +1,330 @@
+---
+title: "Ted Talks - Descriptive Analysis"
+author: "Céline Van den Rul"
+output: html_notebook
+---
+
+# A sneak peak into Ted Talks transcripts 
+
+TED Talks have gone to become hugely popular conferences. Regarded as a mecca of ideas, they have attracted the most high-level speakers such as Bill Gates, Al Gore or Stephen Hawking. Founded in 1984 by Rochard Saulman as a nonprofit organisation aiming at bringing experts from the fields of Technology, Entertainment and Design together, TED and its sister TEDx chapters have, as of 2015, published more than 2000 talks of 18 minutes length available for free on the Internet.
+
+I decided to exploit the availability of these incredibly rich and insightful talks. I rely on the dataset obtained from Rounak Banik and hosted on Kaggle containing the transcripts of all audio-video recordings of TED Talks uploaded to the official TED.com website until September 21st, 2017. I have merged the transcript dataset with a second dataset provided by Rounak Banik containing more metadata information on the TED Talks themselves such as the number of views, speakers, titles etc. The datasets can be downloaded from the Kaggle website via the following link: https://www.kaggle.com/rounakbanik/ted-talks. I have chosen to keep only the variables that I deemed relevant and cleaned the dataset from any blanks or missing values. Additionally, I kept only the TED Conferences or TEDx formal events and removed any external or special conferences. As a result, my final dataset countains 2342 observations from 2002 until 2017. I have 6 variables, describing the following columns in our dataset:
+- "Event": the name of the TED talk event
+- "main_speaker": the first and family name of the speaker
+- "speaker_occupation": the job title of the speaker
+- "title": the title of the TED talk
+- "views": the number of views for the TED talk
+- "transcript": the transcript for the TED talk
+
+```{r echo=FALSE}
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(quanteda)
+library(tidytext)
+library(tidyr)
+library(ggraph)
+library(igraph)
+```
+
+```{r}
+DATA_DIR <- "/Users/celinevdr/Desktop/"
+TedTalks <- read.csv(paste0(DATA_DIR,"ted_main.csv"))
+
+# Cleaning: removing audio descriptive content, columns with NAs and other special conferences
+TedTalks$transcript <- gsub("\\s*\\([^\\)]+\\)","",as.character(TedTalks$transcript)) 
+TedTalks <- TedTalks[!(is.na(TedTalks$event) | TedTalks$event==""), ]
+TedTalks <- TedTalks[!(is.na(TedTalks$speaker_occupation) | TedTalks$speaker_occupation==""), ]
+TedTalks <- TedTalks[!(is.na(TedTalks$transcript) | TedTalks$transcript==""), ]
+TedTalks <- TedTalks[!(is.na(TedTalks$title) | TedTalks$title==""), ]
+TedTalks <- TedTalks[grep("TED", TedTalks$event), ]
+
+TedTalks$transcript <- as.character(TedTalks$transcript)
+TedTalks$main_speaker <- as.character(TedTalks$main_speaker)
+TedTalks$event <- as.character(TedTalks$event)
+TedTalks$title <- as.character(TedTalks$title)
+```
+
+I will aim to give a descriptive narrative of the dataset. As a first step, I will provide a brief description of the dataset itself, identifying subsets of the corpus that can be worth analysing further. Then, I will describe the basic steps of text pre-processing we undertook. Finally, I will perform basic summary statistics that aim to give us an informed idea of the corpus we are dealing with.
+
+## An overview of the dataset
+
+The dataset contians the transcript of 305 unique TED Talks events. These include not only the TED Conference themselves but also its sister event TEDx or special conferences. As a result, it is useful to identify the TED Talks events for which we have most transcripts and from which we can conclude, are also the most popular TED talks conferences. Indeed, even though I have a large amount of different TED talks, there is not an equal number of transcript for all of them. Thus, it may be useful for my analysis to reduce our dataset to only the most popular TED talks for which I have a relatively homogeneous amount of transcripts. This will enable me to conclude more meaningful results and visualizations based on this variable.The graph below shows the 30 TED Talks for which we have the highest number of transcripts.  
+
+```{r echo=T, results='hide'}
+unique(TedTalks$event) #305 TED Talks
+```
+
+```{r}
+TedTalks %>% group_by(event) %>% count() %>% arrange(desc(n)) %>% head(30) %>% 
+ggplot() + 
+geom_bar(aes(reorder(event,-n),n),stat = 'identity') + 
+xlab('TED Talks Events') +
+ylab('Count') + 
+ggtitle('TED Talks Events') + 
+theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Following the results of this graph, I chose to keep only the events for which I have more than 50 transcripts. These are 17 events in total. Due to the high number of transcripts for these events, I expect this sample to be representative of the overall sample. The advantage here is that instead of working with 305 events, I am only working with 17 events. 
+
+```{r}
+Populartalks <- c("TED2014", "TED2009", "TED2016", "TED2013", "TED2015", "TEDGlobal 2012", "TED2011", "TED2007", "TED2017", "TEDGlobal 2011", "TEDGlobal 2013", "TEDGlobal 2009", "TED2010", "TED2012", "TED2008", "TEDGlobal 2010", "TEDGlobal 2014")
+
+TedTalks_events <- subset(TedTalks, event %in% Populartalks)
+unique(TedTalks_events$event)
+```
+
+The dataset also contains the number of views for each TED Talk. This is very useful as it allows me to identify the most popular TED Talks, and hence speakers/topics. A quick summary statistics of the views shows us that this variable is highly skewed to the right, with most TED Talks having views in the one millions and large difference in views betwent the 3rd Quartile and maximum views. A more detailed look at the dataset allows me to identify a clear cut at the 10 million views, which I will chose as the baseline for popular talks. From the whole dataset, I thus have 31 speakers whose TED Talks have reached over 10 million views and that can be interesting to look at in more detail. 
+
+```{r}
+summary(TedTalks$views)
+TedTalks <- TedTalks %>% arrange (-views)
+TedTalks_views <- subset(TedTalks, views > 10000000)
+```
+
+## Text pre-processing
+
+Particular of this corpus is that the transcripts contain audio descriptive content such as "laughter" or "music". As I am analysing only the content of the transcript I chose to remove this descriptive audio content, which is easy to spot because it is in parenthesis. I did that in the early stages of the corpus preparation (see first code chunk) for this to be represented in the subsetted corpora. Here I prepare my corpus and apply the usual tokenization and normalization techniques. I also remove the usual stopwords in the english dictionary. Once this process is done, I create document feature matrices for the tokenized objects. I do this for the whole corpus, as well as separately for the dataset containing only the most popular events and the one containing the most popular speakers. I rely here on the R package Quanteda. 
+
+```{r, message = FALSE, warning = FALSE}
+# Preparing the corpus and document ids
+TedTalks.c <- corpus(TedTalks, text_field = "transcript")
+TedTalks_events.c <- corpus(TedTalks_events,text_field = "transcript")
+TedTalks_views.c <- corpus(TedTalks_views,text_field = "transcript")
+
+docid <- paste(TedTalks_views$main_speaker)
+docnames(TedTalks_views.c) <- docid
+
+stop_words = stopwords("english")
+
+# Tokenization and normalization
+tok.all <- tokens(TedTalks.c, what="word",
+              remove_symbols = TRUE,
+              remove_punct = TRUE,
+              remove_numbers = TRUE,
+              remove_url= TRUE,
+              remove_hyphens = FALSE,
+              verbose = TRUE,
+              remove_twitter = TRUE,
+              include_docvars = TRUE)
+
+# Creating a document feature matrix
+TedTalks_dfm <- dfm(tok.all,
+                    tolower= TRUE,
+                    remove=stop_words,
+                    verbose=TRUE,
+                    include_docvars = TRUE)
+
+# Tokenization and normalization
+tok.events <- tokens(TedTalks_events.c, what="word",
+              remove_symbols = TRUE,
+              remove_punct = TRUE,
+              remove_numbers = TRUE,
+              remove_url= TRUE,
+              remove_hyphens = FALSE,
+              verbose = TRUE,
+              remove_twitter = TRUE,
+              include_docvars = TRUE)
+
+# Creating a document feature matrix
+events_dfm <- dfm(tok.events,
+                    tolower= TRUE,
+                    remove=stop_words,
+                    verbose=TRUE,
+                  include_docvars=TRUE)
+
+# Tokenization and normalization
+tok.views <- tokens(TedTalks_views.c, what="word",
+              remove_symbols = TRUE,
+              remove_punct = TRUE,
+              remove_numbers = TRUE,
+              remove_url= TRUE,
+              remove_hyphens = FALSE,
+              verbose = TRUE,
+              remove_twitter = TRUE,
+              include_docvars = TRUE)
+
+# Creating a document feature matrix
+views_dfm <- dfm(tok.views,
+                    tolower= TRUE,
+                    remove=stop_words,
+                    verbose=TRUE,
+                 include_docvars = TRUE)
+```
+
+## Summary statistics
+
+### The whole dataset 
+
+The following codes show us summary statistics of the dataset in full. A first finding is that the number of unique words (types) is relatively low compared to the number of tokens. This is further demonstrated by a mean TTR in our corpus of 0.5706 which is slightly above average. Hence, I can say that most TED Talks reach normal levels of complexity and lexical richness. This is an important finding because it demonstrates how speakers manage to appeal and captivate an audience, and often an educated audience, not necessarily using either an overly rich and complex lexical or a simple and repetitive lexical. A second finding is that the most frequent words indicate that speakers use a lot of actionable words such as "going", "think", "see", "want" and all of them are relatively short, directly appealing to the dynamic aspect of their talk. 
+
+```{r}
+summary(TedTalks.c, head(10))
+```
+
+```{r}
+textstat_frequency(TedTalks_dfm, n = 20) %>% 
+  ggplot(aes(x = reorder(feature, -rank), y = frequency)) +
+  geom_bar(stat = "identity") + coord_flip() + 
+  labs(x = "", y = "Term Frequency")
+```
+
+```{r echo=T, results='hide'}
+summary(ntoken(TedTalks_dfm)) # Mean is 952
+summary(ntype(TedTalks_dfm)) # Mean is 516.4
+TedTalks_TTR <- TedTalks_dfm %>% 
+    textstat_lexdiv(measure = "TTR")
+summary(TedTalks_TTR) # Mean TTR is 0.5706 
+```
+
+## Summary statistics for the TED Talks from the most popular events
+
+If we consider only the 17 most popular events identified above, the results of the summary statistics confirm that this is a very representative sample of the whole dataset. The same short and actionable words described previously still appear in the most frequent words and the results of the TTR are very similar, showing an average TTR of 0.5724. 
+
+```{r}
+textstat_frequency(events_dfm, n = 20) %>% 
+  ggplot(aes(x = reorder(feature, -rank), y = frequency)) +
+  geom_bar(stat = "identity") + coord_flip() + 
+  labs(x = "", y = "Term Frequency")
+```
+
+```{r echo=T, results='hide'}
+summary(ntoken(events_dfm)) # Mean is 945.6
+summary(ntype(events_dfm)) # Mean is 512.0
+Events_TTR <- events_dfm %>% 
+    textstat_lexdiv(measure = "TTR")
+summary(Events_TTR) # Mean TTR is 0.5724
+```
+
+## Summary statistics for the most popular TED talks
+
+The dataset containing only the most popular TED Talks with views over 10.000.000 interestingly shows that these talks are also not the most complex in our dataset. This is most particularly reflected in the results of the TTR with most talks under the average TTR calculated previously (below 0.57), with the exception of 6 speakers, whose TTR nonetheless does not reach significant highs. Additional readability tests show that these talks are also fairly easy to understand. Although further statistical analysis is required, this may already indicate that popular talks are not necessarily the most complex - even more, that lexical richness is not a defining feature that makes TED Talks popular. The most frequent words used in these talks tend to remain the same as those found in the overall dataset.
+
+```{r}
+summary(TedTalks.c, head(10))
+```
+
+
+```{r}
+textstat_frequency(views_dfm, n = 20) %>% 
+  ggplot(aes(x = reorder(feature, -rank), y = frequency)) +
+  geom_bar(stat = "identity") + coord_flip() + 
+  labs(x = "", y = "Term Frequency")
+```
+
+```{r}
+summary(ntoken(views_dfm)) # Mean is 1155.7
+summary(ntype(views_dfm)) # Mean is 599.7
+views_TTR <- views_dfm %>% 
+    textstat_lexdiv(measure = "TTR")
+views_TTR
+```
+
+```{r}
+readability <- textstat_readability(TedTalks_views.c, c("meanSentenceLength","meanWordSyllables", "Flesch.Kincaid", "Flesch"), remove_hyphens = TRUE,
+  min_sentence_length = 1, max_sentence_length = 10000,
+  intermediate = FALSE)
+head(readability)
+```
+
+## Clustering
+
+Clustering allows us to see how similar objects are grouped in the same clusters and different objects are grouped in different clusters. In this case, I use hierarchical clustering and produce the dendograms shown below. First, I do this for my corpus containing only the most popular events. The dendogram below shows the hierarchical relationship between our speakers according to Euclidean distance. It is interesting to see that speakers who follow each other in the ranking of highest views do not necessarily cluster together.  
+
+```{r}
+TedTalks_dist_mat <- dfm_weight(views_dfm, scheme = "prop") %>%
+textstat_dist(method="euclidean")
+
+TedTalks_cluster <- hclust(TedTalks_dist_mat)
+
+TedTalks_cluster$labels <- docnames(views_dfm)
+
+plot(TedTalks_cluster, xlab = "", sub = "", 
+     main = "Euclidean Distance on Normalized Token Frequency")
+```
+
+Second, I perform hierarchical clustering on my corpus containing the most popular TED events. Here, the clusters are clearer and we can clearly identify the events that cluster together. 
+
+```{r}
+events_dfm <- dfm_group(events_dfm, groups="event")
+TedTalks_dist_mat <- dfm_weight(events_dfm, scheme = "prop") %>%
+textstat_dist(method="euclidean")
+TedTalks_cluster <- hclust(TedTalks_dist_mat)
+
+TedTalks_cluster$labels <- docnames(events_dfm)
+
+plot(TedTalks_cluster, xlab = "", sub = "", 
+     main = "Euclidean Distance on Normalized Token Frequency")
+
+```
+
+## Network of words
+
+A useful tool of summary statistics is not only to analyse how TED Talks relate to each other but also to analyse the words themselves. In this case, network graphs are useful visualizations. 
+
+### Capturing possible topics in the titles: bigrams
+
+The dataset provides us with the titles of the TED Talks. This can be useful to have a first grasp of the possible topics addresses in the talks. To this aim, I use the tidytext package to analyse bigrams in the titles. Note that bigrams can also be very useful to provide a more accurate context for a future sentiment analysis of the corpus. 
+
+The network graph below shows the relationship amongs words in the titles of the TED Talks. Note that I have only kept the most frequent two words relationships for a clearer visualization. We can already identify some predominant themes such as high school, united states, climate change, health care or other popular combinations surrounding "years", "people" and "one". 
+
+```{r}
+TedTalks_bigrams <- TedTalks %>%
+  unnest_tokens(bigram, transcript, token="ngrams", n=2)
+
+TedTalks_bigrams %>%
+  count(bigram, sort = TRUE)
+
+bigrams_separated <- TedTalks_bigrams %>%
+  separate(bigram, c("word1", "word2"), sep= " ")
+
+my_stopwords <- tibble(word=stopwords("english"))
+
+bigrams_filtered <- bigrams_separated %>%
+  filter(!word1 %in% my_stopwords$word) %>%
+  filter(!word2 %in% my_stopwords$word)
+
+bigram_counts <- bigrams_filtered %>% 
+  count(word1, word2, sort = TRUE)
+
+bigram_graph <- bigram_counts %>%
+  filter(n > 200) %>%
+  graph_from_data_frame()
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+### Capturing word relationships in the TED transcripts
+
+In the network graph below I perform something slightly different by relying on the quanteda package. I construct a feature co-occurence matrix (FCM) that records the number of co-occurances of tokens. I construct this using the dataset containing the most popular TED events, as I could already demonstrate it is quite representative of the overall datatset of TED transcripts. As such, I visualize here the relationship between words in the transcripts, not the titles. 
+
+```{r}
+events_dfm <- dfm_trim(events_dfm, min_termfreq = 100)
+topfeatures(events_dfm)
+nfeat(events_dfm)
+
+fcm_events <- fcm(events_dfm, window = 25L)
+dim(fcm_events)
+
+feat <- names(topfeatures(fcm_events, 50))
+fcm_events_select <- fcm_select(fcm_events, pattern = feat)
+dim(fcm_events_select)
+
+size <- log(colSums(dfm_select(events_dfm, feat)))
+set.seed(144)
+textplot_network(fcm_events_select, min_freq = 0.8, vertex_size = size / max(size) * 3)
+```
+## Conclusion
+
+This exercise aimed at providing a basic and descriptive overview of the dataset containing the transcript of TED Talks as well as additional variables including the title of the event itself, the views, the speaker and its job title to enrich the analysis. I could identify two subsets of the corpus on which one can perform more detailed analysis, a corpus containing the most popular events that is quite representative of the overall corpus and a corpus containing the most popular TED talks. An interesting finding is that TED Talks are not necessarily overly rich and complex or the opposite, instead the transcripts show avergae levels of lexical richness and fairly easy readability. I was able to identify how TED Talks cluster together but also how words themselves relate to each other in the corpora. A deeper analysis of the titles of TED Talks through bigrams also presented interesting findings as to possible topics, should one undertake a future topic model analysis. 
+
+Overall, TED Talks transcripts provide an interesting corpus for text analysis. Future analysis could be devoted to the role of humour in TED Talks, what makes some TED Talks more popular than others based on content or even used as a training corpus to come up with an algorithm to recommend TED Talks based on their similarity purely by just using content. 
+
+
